@@ -1,0 +1,31 @@
+name: Run Unit Tests
+
+on:
+  push:
+    branches:
+      - main # Trigger on pushes to the main branch
+  pull_request:
+    branches:
+      - main # Trigger on pull requests targeting the main branch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4 # Action to check out your repository code
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20' # Specify the Node.js version you are using (e.g., 18, 20)
+        cache: 'npm' # Cache npm dependencies for faster builds
+
+    - name: Install dependencies
+      run: npm ci # Install project dependencies (uses package-lock.json)
+
+    - name: Run unit tests
+      run: npm test # Command to run your unit tests (as defined in package.json)
+      # If you specifically want to run the Counter test, you can change it to:
+      # run: npm test src/__tests__/Counter.test.tsx
