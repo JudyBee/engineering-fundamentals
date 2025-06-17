@@ -1,55 +1,9 @@
-name: CI/CD Pipeline (Build, Push, Deploy)
-
-on:
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*.*' # Also trigger on tag pushes for the deploy job
-
-jobs:
-  code-analysis:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: SonarCloud Scan
-        run: echo "** TASK D.1 - Replace this step with your SonarCloud analysis command (using SonarSource/sonarcloud-github-action@v2.2.0) **"
-        # Hints:
-          # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided by GitHub Actions
-          # SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }} # Needs to be created in your SonarCloud Account and stored in your github repository secrets
-          # -Dsonar.projectKey=<your-project-key>
-          # -Dsonar.organization=<your-private-sonarcloud-organization>
-          # -Dsonar.sources=.
-
-  test:
-    needs: code-analysis
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: execute the unit test
-        run: echo "** TASK A - Add the necessary steps such that the unit test is executed on every merge request or pull request on the main branch."
-
-
-  publish-docker-image:
+publish-docker-image:
     needs: test
-    # This job runs only on pushes to main. It will generate a tag and push it.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Crucial for pushing the tag
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -100,12 +54,15 @@ jobs:
           IMAGE_NAME="ipt-spins" # <-- IMPORTANT: Ensure this matches your webapp create name
 
           echo "Building Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG"
-          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG -t $REGISTRY_URL/$IMAGE_NAME:latest .
-
-          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG to ACR"
+          # CORRECTED LINE: Removed the redundant '.' after ':latest'
+          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG -t $REGISTRY_URL/$IMAGE_NAME:latest
+          
+          # No separate push section needed here, as build.push handles it.
+          # The previous separate push commands are redundant if build is doing the push
+          # Keep only the echo for confirmation.
+          echo "Docker images for $IMAGE_NAME with tags $IMAGE_TAG and latest built and will be pushed."
+          # If you want to explicitly push, ensure you are running docker push for each tag:
           docker push $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
-
-          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:latest to ACR"
           docker push $REGISTRY_URL/$IMAGE_NAME:latest
           echo "Docker images pushed successfully!"
 
