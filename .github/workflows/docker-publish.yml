@@ -158,8 +158,7 @@ publish-docker-image:
 
           echo "Docker images pushed successfully!"
 
-
-  deploy-to-azure: # ADDED: NEW DEPLOYMENT JOB
+deploy-to-azure: # ADDED: NEW DEPLOYMENT JOB
     needs: publish-docker-image # This job depends on the previous one succeeding
     # This deployment job will run ONLY when a new tag is pushed (which is done by publish-docker-image)
     # and ensures the deployment uses the image tagged 'latest'
