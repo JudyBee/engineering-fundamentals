@@ -1,4 +1,49 @@
-publish-docker-image:
+name: Build and Push Docker Image
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - main
+    tags: # ADDED: Trigger on tag pushes for the deploy job
+      - 'v*.*'
+
+jobs:
+  code-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        run: echo "** TASK D.1 - Replace this step with your SonarCloud analysis command (using SonarSource/sonarcloud-github-action@v2.2.0) **"
+        # Hints:
+          # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided by GitHub Actions
+          # SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }} # Needs to be created in your SonarCloud Account and stored in your github repository secrets
+          # -Dsonar.projectKey=<your-project-key>
+          # -Dsonar.organization=<your-private-sonarcloud-organization>
+          # -Dsonar.sources=.
+
+  test:
+    needs: code-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: execute the unit test
+        run: echo "** TASK A - Add the necessary steps such that the unit test is executed on every merge request or pull request on the main branch."
+
+
+  publish-docker-image:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -6,68 +51,114 @@ publish-docker-image:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions:checkout@v4
         with:
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Azure Container Registry # TASK B.1
+      - name: Log in to Azure Container Registry
         run: |
           echo "** TASK B.1 - Log in to Azure Container Registry using admin credentials **"
+          # Log in to Azure Container Registry using the provided admin credentials
+          # The --password-stdin flag is used for security, piping the password from the secret.
           echo "${{ secrets.AZURE_CR_PASSWORD }}" | docker login judysregistry.azurecr.io --username ${{ secrets.AZURE_CR_USERNAME }} --password-stdin
-          echo "Logged in to ACR: judysregistry.azurecr.io" # Added for clarity in logs
-
       - name: Generate and Push Git Tag for New Version # TASK B.2
         id: versioning # This ID allows you to access outputs from this step
         run: |
           echo "** TASK B.2 - Generate a new Git tag for the Docker image version. Start with version v0.1 resp. increment existing git tag by 0.1. **"
+          echo "Publish the git tag to the remote repository and store it as an output for subsequent steps. (hint: use GITHUB_OUTPUT)"
+
+          # 1. Configure Git user for the commit/tag - essential for Git operations
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 2. Fetch all tags from the remote. This is critical to ensure we see all existing tags.
+          # Use --prune-tags to clean up stale local tags if any, before fetching new ones.
+          echo "Fetching all remote tags for accurate versioning..."
           git fetch origin --tags --prune-tags
+
+          # 3. Get the highest existing version tag matching the pattern vX.Y
+          #    - git tag -l "v*.*": Lists all tags matching the pattern.
+          #    - sort -V: Sorts versions numerically (e.g., v0.9 comes before v0.10).
+          #    - tail -n 1: Takes the last line, which is the highest version after sorting.
+          #    - || echo "v0.0": If no tags are found, defaults to "v0.0" to start the sequence.
           latest_tag=$(git tag -l "v*.*" | sort -V | tail -n 1)
-          if [[ -z "$latest_tag" ]]; then
-            latest_tag="v0.0"
+
+          if [[ -z "$latest_tag" ]]; then # If no tags at all were found by git tag -l
+            latest_tag="v0.0" # Default to v0.0 to ensure next is v0.1
           fi
           echo "Highest existing tag found: $latest_tag"
+
+          # 4. Extract major and minor versions
+          #    Uses 'cut' for simplicity, assuming 'vX.Y' format.
+          #    'cut -d'v' -f2': Removes the 'v' prefix.
+          #    'cut -d'.' -f1': Gets the major part (before the dot).
+          #    'cut -d'.' -f2': Gets the minor part (after the dot).
           major_version=$(echo "$latest_tag" | cut -d'v' -f2 | cut -d'.' -f1)
           minor_version=$(echo "$latest_tag" | cut -d'.' -f2)
+
+          # 5. Calculate the next minor version
+          #    $((...)) performs arithmetic. 10# ensures the number is treated as base-10
+          #    to avoid issues with numbers that might look like octal (e.g., "08", "09").
           next_minor_version=$((10#$minor_version + 1))
+
+          # 6. Construct the new tag string
           new_tag="v${major_version}.${next_minor_version}"
-          
+          echo "Proposed new tag: $new_tag"
+
+          # 7. Check if the new tag already exists on the remote before creating and pushing
+          # This makes the step idempotent (safe to re-run without error if tag already exists)
           if git ls-remote --tags origin "$new_tag" | grep -q "$new_tag"; then
             echo "Tag '$new_tag' already exists on remote. Skipping tag creation and push."
           else
+            # 8. Create the new Git tag locally
             echo "Creating local tag '$new_tag'..."
             git tag "$new_tag"
+
+            # 9. Push the new tag to the remote repository
+            #    This requires the 'contents: write' permission on the job.
             echo "Pushing tag '$new_tag' to remote..."
             git push origin "$new_tag"
             echo "Tag '$new_tag' successfully created and pushed."
           fi
+
+          # 10. Store the final determined tag (either newly created or existing) as a step output.
+          #     This makes the 'full_tag' variable available to subsequent steps
+          #     using the syntax: ${{ steps.versioning.outputs.full_tag }}
           echo "full_tag=$new_tag" >> "$GITHUB_OUTPUT"
           echo "Final tag used for this workflow run: $new_tag"
 
-
-      - name: Build and Push Docker Image (with new tag and latest) # This combines build and push for clarity
+      - name: Build the Docker image
         run: |
-          IMAGE_TAG=${{ steps.versioning.outputs.full_tag }}
-          REGISTRY_URL="judysregistry.azurecr.io"
-          IMAGE_NAME="ipt-spins" # <-- IMPORTANT: Ensure this matches your webapp create name
+          docker build -t judysregistry.azurecr.io/ipt-spins:${{ steps.versioning.outputs.full_tag }} -t judysregistry.azurecr.io/ipt-spins:latest .
 
-          echo "Building Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG"
-          # CORRECTED LINE: Removed the redundant '.' after ':latest'
-          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG -t $REGISTRY_URL/$IMAGE_NAME:latest
+      - name: Push the Docker image to ACR # TASK B.3
+        run: |
+          echo "** TASK B.3 - Push the docker images to the ACR **"
+
+          # Get the generated tag from the previous step (Task B.2)
+          IMAGE_TAG=${{ steps.versioning.outputs.full_tag }}
           
-          # No separate push section needed here, as build.push handles it.
-          # The previous separate push commands are redundant if build is doing the push
-          # Keep only the echo for confirmation.
-          echo "Docker images for $IMAGE_NAME with tags $IMAGE_TAG and latest built and will be pushed."
-          # If you want to explicitly push, ensure you are running docker push for each tag:
+          # Define your ACR registry URL and image name
+          REGISTRY_URL="judysregistry.azurecr.io" # Your ACR login server
+          IMAGE_NAME="ipt-spins" # <-- CORRECTED: consistent with webapp, not 'my-app'
+
+          # Build the Docker image (this is redundant with the previous step but kept as per request)
+          echo "Building Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG"
+          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG -t $REGISTRY_URL/$IMAGE_NAME:latest # Ensure both tags are built
+
+          # Push the Docker image with the version tag
+          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG to ACR"
           docker push $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
+
+          # Push the Docker image with the 'latest' tag (crucial for deployment)
+          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:latest to ACR"
           docker push $REGISTRY_URL/$IMAGE_NAME:latest
+
           echo "Docker images pushed successfully!"
 
 
-  deploy-to-azure: # NEW DEPLOYMENT JOB
+  deploy-to-azure: # ADDED: NEW DEPLOYMENT JOB
     needs: publish-docker-image # This job depends on the previous one succeeding
     # This deployment job will run ONLY when a new tag is pushed (which is done by publish-docker-image)
     # and ensures the deployment uses the image tagged 'latest'
