@@ -60,7 +60,7 @@ jobs:
           # Log in to Azure Container Registry using the provided admin credentials
           # The --password-stdin flag is used for security, piping the password from the secret.
           echo "${{ secrets.AZURE_CR_PASSWORD }}" | docker login judysregistry.azurecr.io --username ${{ secrets.AZURE_CR_USERNAME }} --password-stdin
-      - name: Generate and Push Git Tag for New Version
+      - name: Generate and Push Git Tag for New Version # TASK B.2
         id: versioning # This ID allows you to access outputs from this step
         run: |
           echo "** TASK B.2 - Generate a new Git tag for the Docker image version. Start with version v0.1 resp. increment existing git tag by 0.1. **"
@@ -70,46 +70,61 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 2. Fetch all tags from the remote, ensuring local is up-to-date
-          # --force is used to make sure local tags don't prevent fetching if they are out of sync
-          echo "Fetching all remote tags..."
-          git fetch --tags --force origin
+          # 2. Fetch all tags from the remote. This is critical to ensure we see all existing tags.
+          # Use --prune-tags to clean up stale local tags if any, before fetching new ones.
+          echo "Fetching all remote tags for accurate versioning..."
+          git fetch origin --tags --prune-tags
 
-          # 3. Get the latest existing tag matching the pattern vX.Y
-          #    - git describe --tags: Lists tags.
-          #    - --abbrev=0: Shows only the tag name, not the commit hash.
-          #    - --match "v[0-9]*.[0-9]*": Only considers tags starting with 'v' followed by numbers.
-          #    - 2>/dev/null: Suppresses error messages if no tags match.
-          #    - || echo "v0.0": If no matching tag is found, defaults to "v0.0" to start the sequence.
-          latest_tag=$(git describe --tags --abbrev=0 --match "v[0-9]*.[0-9]*" 2>/dev/null || echo "v0.0")
-          echo "Latest existing tag found: $latest_tag"
+          # 3. Get the highest existing version tag matching the pattern vX.Y
+          #    - git tag -l "v*.*": Lists all tags matching the pattern.
+          #    - sort -V: Sorts versions numerically (e.g., v0.9 comes before v0.10).
+          #    - tail -n 1: Takes the last line, which is the highest version after sorting.
+          #    - || echo "v0.0": If no tags are found, defaults to "v0.0" to start the sequence.
+          latest_tag=$(git tag -l "v*.*" | sort -V | tail -n 1)
 
-          # 4. Extract major and minor versions from the latest tag
-          #    Uses 'sed' to parse the tag like "v1.2" into "1" and "2".
-          major_version=$(echo "$latest_tag" | sed -E 's/^v([0-9]+)\.([0-9]+)$/\1/')
-          minor_version=$(echo "$latest_tag" | sed -E 's/^v([0-9]+)\.([0-9]+)$/\2/')
+          if [[ -z "$latest_tag" ]]; then # If no tags at all were found by git tag -l
+            latest_tag="v0.0" # Default to v0.0 to ensure next is v0.1
+          fi
+          echo "Highest existing tag found: $latest_tag"
+
+          # 4. Extract major and minor versions
+          #    Uses 'cut' for simplicity, assuming 'vX.Y' format.
+          #    'cut -d'v' -f2': Removes the 'v' prefix.
+          #    'cut -d'.' -f1': Gets the major part (before the dot).
+          #    'cut -d'.' -f2': Gets the minor part (after the dot).
+          major_version=$(echo "$latest_tag" | cut -d'v' -f2 | cut -d'.' -f1)
+          minor_version=$(echo "$latest_tag" | cut -d'.' -f2)
 
           # 5. Calculate the next minor version
           #    $((...)) performs arithmetic. 10# ensures the number is treated as base-10
-          #    to avoid issues with numbers that might look like octal (e.g., "08").
+          #    to avoid issues with numbers that might look like octal (e.g., "08", "09").
           next_minor_version=$((10#$minor_version + 1))
 
           # 6. Construct the new tag string
           new_tag="v${major_version}.${next_minor_version}"
-          echo "Generated new tag: $new_tag"
+          echo "Proposed new tag: $new_tag"
 
-          # 7. Create the new Git tag locally
-          git tag "$new_tag"
+          # 7. Check if the new tag already exists on the remote before creating and pushing
+          # This makes the step idempotent (safe to re-run without error if tag already exists)
+          if git ls-remote --tags origin "$new_tag" | grep -q "$new_tag"; then
+            echo "Tag '$new_tag' already exists on remote. Skipping tag creation and push."
+          else
+            # 8. Create the new Git tag locally
+            echo "Creating local tag '$new_tag'..."
+            git tag "$new_tag"
 
-          # 8. Push the new tag to the remote repository
-          #    This requires the 'contents: write' permission on the job.
-          echo "Pushing tag '$new_tag' to remote..."
-          git push origin "$new_tag"
+            # 9. Push the new tag to the remote repository
+            #    This requires the 'contents: write' permission on the job.
+            echo "Pushing tag '$new_tag' to remote..."
+            git push origin "$new_tag"
+            echo "Tag '$new_tag' successfully created and pushed."
+          fi
 
-          # 9. Store the new tag as a step output.
-          #    This makes the 'full_tag' variable available to subsequent steps
-          #    using the syntax: ${{ steps.versioning.outputs.full_tag }}
+          # 10. Store the final determined tag (either newly created or existing) as a step output.
+          #     This makes the 'full_tag' variable available to subsequent steps
+          #     using the syntax: ${{ steps.versioning.outputs.full_tag }}
           echo "full_tag=$new_tag" >> "$GITHUB_OUTPUT"
+          echo "Final tag used for this workflow run: $new_tag"
 
       - name: Build the Docker image
         run: |
