@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: CI/CD Pipeline (Build, Push, Deploy)
 
 on:
   pull_request:
@@ -11,6 +11,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*' # Also trigger on tag pushes for the deploy job
 
 jobs:
   code-analysis:
@@ -43,10 +45,11 @@ jobs:
 
   publish-docker-image:
     needs: test
+    # This job runs only on pushes to main. It will generate a tag and push it.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Crucial for pushing the tag
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -54,100 +57,89 @@ jobs:
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Azure Container Registry
-        run: | # <-- ADD ONE MORE SPACE HERE (should be 2 spaces from 'name:')
+      - name: Log in to Azure Container Registry # TASK B.1
+        run: |
           echo "** TASK B.1 - Log in to Azure Container Registry using admin credentials **"
-          # Log in to Azure Container Registry using the provided admin credentials
-          # The --password-stdin flag is used for security, piping the password from the secret.
           echo "${{ secrets.AZURE_CR_PASSWORD }}" | docker login judysregistry.azurecr.io --username ${{ secrets.AZURE_CR_USERNAME }} --password-stdin
+          echo "Logged in to ACR: judysregistry.azurecr.io" # Added for clarity in logs
+
       - name: Generate and Push Git Tag for New Version # TASK B.2
         id: versioning # This ID allows you to access outputs from this step
         run: |
           echo "** TASK B.2 - Generate a new Git tag for the Docker image version. Start with version v0.1 resp. increment existing git tag by 0.1. **"
-          echo "Publish the git tag to the remote repository and store it as an output for subsequent steps. (hint: use GITHUB_OUTPUT)"
-
-          # 1. Configure Git user for the commit/tag - essential for Git operations
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # 2. Fetch all tags from the remote. This is critical to ensure we see all existing tags.
-          # Use --prune-tags to clean up stale local tags if any, before fetching new ones.
-          echo "Fetching all remote tags for accurate versioning..."
           git fetch origin --tags --prune-tags
-
-          # 3. Get the highest existing version tag matching the pattern vX.Y
-          #    - git tag -l "v*.*": Lists all tags matching the pattern.
-          #    - sort -V: Sorts versions numerically (e.g., v0.9 comes before v0.10).
-          #    - tail -n 1: Takes the last line, which is the highest version after sorting.
-          #    - || echo "v0.0": If no tags are found, defaults to "v0.0" to start the sequence.
           latest_tag=$(git tag -l "v*.*" | sort -V | tail -n 1)
-
-          if [[ -z "$latest_tag" ]]; then # If no tags at all were found by git tag -l
-            latest_tag="v0.0" # Default to v0.0 to ensure next is v0.1
+          if [[ -z "$latest_tag" ]]; then
+            latest_tag="v0.0"
           fi
           echo "Highest existing tag found: $latest_tag"
-
-          # 4. Extract major and minor versions
-          #    Uses 'cut' for simplicity, assuming 'vX.Y' format.
-          #    'cut -d'v' -f2': Removes the 'v' prefix.
-          #    'cut -d'.' -f1': Gets the major part (before the dot).
-          #    'cut -d'.' -f2': Gets the minor part (after the dot).
           major_version=$(echo "$latest_tag" | cut -d'v' -f2 | cut -d'.' -f1)
           minor_version=$(echo "$latest_tag" | cut -d'.' -f2)
-
-          # 5. Calculate the next minor version
-          #    $((...)) performs arithmetic. 10# ensures the number is treated as base-10
-          #    to avoid issues with numbers that might look like octal (e.g., "08", "09").
           next_minor_version=$((10#$minor_version + 1))
-
-          # 6. Construct the new tag string
           new_tag="v${major_version}.${next_minor_version}"
-          echo "Proposed new tag: $new_tag"
-
-          # 7. Check if the new tag already exists on the remote before creating and pushing
-          # This makes the step idempotent (safe to re-run without error if tag already exists)
+          
           if git ls-remote --tags origin "$new_tag" | grep -q "$new_tag"; then
             echo "Tag '$new_tag' already exists on remote. Skipping tag creation and push."
           else
-            # 8. Create the new Git tag locally
             echo "Creating local tag '$new_tag'..."
             git tag "$new_tag"
-
-            # 9. Push the new tag to the remote repository
-            #    This requires the 'contents: write' permission on the job.
             echo "Pushing tag '$new_tag' to remote..."
             git push origin "$new_tag"
             echo "Tag '$new_tag' successfully created and pushed."
           fi
-
-          # 10. Store the final determined tag (either newly created or existing) as a step output.
-          #     This makes the 'full_tag' variable available to subsequent steps
-          #     using the syntax: ${{ steps.versioning.outputs.full_tag }}
           echo "full_tag=$new_tag" >> "$GITHUB_OUTPUT"
           echo "Final tag used for this workflow run: $new_tag"
 
-      - name: Build the Docker image
-        run: |
-          docker build -t judysregistry.azurecr.io/ipt-spins:${{ steps.versioning.outputs.full_tag }} -t judysregistry.azurecr.io/ipt-spins:latest .
 
-      - name: Push the Docker image to ACR # TASK B.3
+      - name: Build and Push Docker Image (with new tag and latest) # This combines build and push for clarity
         run: |
-          echo "** TASK B.3 - Push the docker images to the ACR **"
-
-          # Get the generated tag from the previous step (Task B.2)
           IMAGE_TAG=${{ steps.versioning.outputs.full_tag }}
-          
-          # Define your ACR registry URL and image name
-          REGISTRY_URL="judysregistry.azurecr.io" # Your ACR login server
-          IMAGE_NAME="my-app" # <-- IMPORTANT: Replace with the actual name of your Docker image
+          REGISTRY_URL="judysregistry.azurecr.io"
+          IMAGE_NAME="ipt-spins" # <-- IMPORTANT: Ensure this matches your webapp create name
 
-          # Build the Docker image
           echo "Building Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG"
-          # The '.' assumes your Dockerfile is in the root of your repository
-          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
+          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG -t $REGISTRY_URL/$IMAGE_NAME:latest .
 
-          # Push the Docker image to ACR
           echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG to ACR"
           docker push $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
 
-          echo "Docker image $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG pushed successfully!"
+          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:latest to ACR"
+          docker push $REGISTRY_URL/$IMAGE_NAME:latest
+          echo "Docker images pushed successfully!"
+
+
+  deploy-to-azure: # NEW DEPLOYMENT JOB
+    needs: publish-docker-image # This job depends on the previous one succeeding
+    # This deployment job will run ONLY when a new tag is pushed (which is done by publish-docker-image)
+    # and ensures the deployment uses the image tagged 'latest'
+    if: success() && startsWith(github.ref, 'refs/tags/v') 
+    runs-on: ubuntu-latest
+    environment: production # Good practice for deployments
+    permissions:
+      id-token: write # Required for azure/login with OIDC (preferred)
+      contents: read  # Required for checkout
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure with Service Principal
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_RESOURCEGROUP_CONTRIBUTOR_SERVICEPRINICIPAL }}
+
+      - name: Deploy to Azure Web App
+        id: deploy-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          slot-name: 'production'
+          images: 'judysregistry.azurecr.io/ipt-spins:latest' # Deploy the 'latest' tagged image
+
+      - name: Verify Deployment URL (Optional)
+        run: |
+          echo "Deployment initiated. Verify your application at:"
+          echo "https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          echo "Please allow a few moments for the new image to become active."
