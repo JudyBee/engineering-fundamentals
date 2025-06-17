@@ -59,7 +59,7 @@ jobs:
           echo "** TASK B.1 - Log in to Azure Container Registry using admin credentials **"
           # Log in to Azure Container Registry using the provided admin credentials
           # The --password-stdin flag is used for security, piping the password from the secret.
-          echo "${{ secrets.AZURE_CR_PASSWORD }}" | az acr login --name judysregistry --username ${{ secrets.AZURE_CR_USERNAME }} --password-stdin
+          echo "${{ secrets.AZURE_CR_PASSWORD }}" | docker login judysregistry.azurecr.io --username ${{ secrets.AZURE_CR_USERNAME }} --password-stdin
       - name: Generate and Push Git Tag for New Version
         id: versioning
         run: |
