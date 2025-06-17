@@ -115,5 +115,24 @@ jobs:
         run: |
           docker build -t judysregistry.azurecr.io/ipt-spins:${{ steps.versioning.outputs.full_tag }} -t judysregistry.azurecr.io/ipt-spins:latest .
 
-      - name: Push the Docker image to ACR
-        run: echo "** TASK B.3 - Push the docker images to the ACR **"
+      - name: Push the Docker image to ACR # TASK B.3
+        run: |
+          echo "** TASK B.3 - Push the docker images to the ACR **"
+
+          # Get the generated tag from the previous step (Task B.2)
+          IMAGE_TAG=${{ steps.versioning.outputs.full_tag }}
+          
+          # Define your ACR registry URL and image name
+          REGISTRY_URL="judysregistry.azurecr.io" # Your ACR login server
+          IMAGE_NAME="my-app" # <-- IMPORTANT: Replace with the actual name of your Docker image
+
+          # Build the Docker image
+          echo "Building Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG"
+          # The '.' assumes your Dockerfile is in the root of your repository
+          docker build . -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
+
+          # Push the Docker image to ACR
+          echo "Pushing Docker image: $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG to ACR"
+          docker push $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
+
+          echo "Docker image $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG pushed successfully!"
